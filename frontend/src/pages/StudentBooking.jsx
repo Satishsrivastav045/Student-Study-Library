@@ -18,7 +18,9 @@ const initialStudent = {
 };
 
 const initialBooking = {
+  bookingType: 'single',
   shiftId: '',
+  shiftIds: [],
   seatId: '',
   bookingDate: today()
 };
@@ -50,7 +52,8 @@ const StudentBooking = () => {
         if (data.length > 0) {
           setBooking((current) => ({
             ...current,
-            shiftId: current.shiftId || data[0]._id
+            shiftId: current.shiftId || data[0]._id,
+            shiftIds: current.shiftIds.length > 0 ? current.shiftIds : [data[0]._id]
           }));
         }
 
@@ -92,7 +95,16 @@ const StudentBooking = () => {
   }, []);
 
   useEffect(() => {
-    if (!booking.shiftId) {
+    const selectedShiftIds =
+      booking.bookingType === 'single'
+        ? booking.shiftId
+          ? [booking.shiftId]
+          : []
+        : booking.bookingType === 'full-day'
+        ? shifts.map((shift) => shift._id)
+        : booking.shiftIds;
+
+    if (selectedShiftIds.length === 0) {
       setSeats([]);
       return;
     }
@@ -100,10 +112,30 @@ const StudentBooking = () => {
     let alive = true;
     setLoadingSeats(true);
 
-    API.get(`/seats/shift/${booking.shiftId}?bookingDate=${booking.bookingDate}`)
-      .then((res) => {
+    Promise.all(
+      selectedShiftIds.map((shiftId) =>
+        API.get(`/seats/shift/${shiftId}?bookingDate=${booking.bookingDate}`)
+      )
+    )
+      .then((responses) => {
         if (!alive) return;
-        setSeats(res.data?.data || []);
+
+        const [firstResponse, ...otherResponses] = responses;
+        const firstSeats = firstResponse.data?.data || [];
+        const otherSeatMaps = otherResponses.map((response) => {
+          const map = new Map();
+          (response.data?.data || []).forEach((seat) => map.set(seat._id, seat));
+          return map;
+        });
+
+        const seatsAvailableInEveryShift = firstSeats.map((seat) => ({
+          ...seat,
+          isAvailable:
+            seat.isAvailable &&
+            otherSeatMaps.every((seatMap) => seatMap.get(seat._id)?.isAvailable)
+        }));
+
+        setSeats(seatsAvailableInEveryShift);
       })
       .catch(() => {
         if (!alive) return;
@@ -116,17 +148,40 @@ const StudentBooking = () => {
     return () => {
       alive = false;
     };
-  }, [booking.shiftId, booking.bookingDate]);
+  }, [booking.bookingType, booking.shiftId, booking.shiftIds, booking.bookingDate, shifts]);
 
   const availableSeats = useMemo(
     () => seats.filter((seat) => seat.isAvailable),
     [seats]
   );
 
+  const selectedShiftIds = useMemo(() => {
+    if (booking.bookingType === 'single') {
+      return booking.shiftId ? [booking.shiftId] : [];
+    }
+
+    if (booking.bookingType === 'full-day') {
+      return shifts.map((shift) => shift._id);
+    }
+
+    return booking.shiftIds;
+  }, [booking.bookingType, booking.shiftId, booking.shiftIds, shifts]);
+
+  const selectedShifts = shifts.filter((shift) => selectedShiftIds.includes(shift._id));
   const selectedShift = shifts.find((shift) => shift._id === booking.shiftId);
   const selectedSeat = availableSeats.find((seat) => seat._id === booking.seatId);
   const selectedShiftStats = useMemo(() => {
-    const cached = shiftSummaries[booking.shiftId];
+    if (selectedShiftIds.length > 0 && seats.length > 0) {
+      const free = seats.filter((seat) => seat.isAvailable).length;
+      const total = seats.length;
+      return {
+        total,
+        booked: Math.max(total - free, 0),
+        free
+      };
+    }
+
+    const cached = shiftSummaries[selectedShiftIds[0]];
     if (cached) {
       return cached;
     }
@@ -139,7 +194,7 @@ const StudentBooking = () => {
       booked,
       free: Math.max(total - booked, 0)
     };
-  }, [booking.shiftId, seats, shiftSummaries]);
+  }, [selectedShiftIds, seats, shiftSummaries]);
 
   const formatShiftLabel = (shift) => {
     const summary = shiftSummaries[shift._id];
@@ -160,8 +215,31 @@ const StudentBooking = () => {
     setBooking((current) => ({
       ...current,
       [field]: value,
-      ...(field === 'shiftId' ? { seatId: '' } : {})
+      ...(field === 'bookingType'
+        ? {
+            seatId: '',
+            shiftId: shifts[0]?._id || '',
+            shiftIds: shifts[0]?._id ? [shifts[0]._id] : []
+          }
+        : {}),
+      ...(field === 'shiftId' ? { seatId: '', shiftIds: value ? [value] : [] } : {})
     }));
+  };
+
+  const toggleShift = (shiftId) => (event) => {
+    const checked = event.target.checked;
+
+    setBooking((current) => {
+      const nextShiftIds = checked
+        ? [...current.shiftIds, shiftId].slice(0, 2)
+        : current.shiftIds.filter((id) => id !== shiftId);
+
+      return {
+        ...current,
+        shiftIds: nextShiftIds,
+        seatId: ''
+      };
+    });
   };
 
   const saveStudent = async (event) => {
@@ -208,19 +286,40 @@ const StudentBooking = () => {
       return alert('Please save student details first');
     }
 
-    if (!booking.shiftId || !booking.seatId || !booking.bookingDate) {
-      return alert('Select shift, seat and booking date');
+    if (!booking.seatId || !booking.bookingDate) {
+      return alert('Select seat and booking date');
+    }
+
+    if (booking.bookingType === 'single' && !booking.shiftId) {
+      return alert('Select shift');
+    }
+
+    if (booking.bookingType === 'multi' && booking.shiftIds.length !== 2) {
+      return alert('Select exactly 2 shifts');
     }
 
     try {
       setBookingSaving(true);
 
-      await API.post('/bookings', {
+      const basePayload = {
         studentId: studentRecordId,
         seatId: booking.seatId,
-        shiftId: booking.shiftId,
         bookingDate: booking.bookingDate
-      });
+      };
+
+      if (booking.bookingType === 'full-day') {
+        await API.post('/bookings/full-day', basePayload);
+      } else if (booking.bookingType === 'multi') {
+        await API.post('/bookings/multi-shift', {
+          ...basePayload,
+          shiftIds: booking.shiftIds
+        });
+      } else {
+        await API.post('/bookings', {
+          ...basePayload,
+          shiftId: booking.shiftId
+        });
+      }
 
       alert('Booking successful');
 
@@ -228,7 +327,8 @@ const StudentBooking = () => {
       setStudentRecordId('');
       setBooking({
         ...initialBooking,
-        shiftId: shifts[0]?._id || ''
+        shiftId: shifts[0]?._id || '',
+        shiftIds: shifts[0]?._id ? [shifts[0]._id] : []
       });
       setSeats([]);
       setActiveSection('student');
@@ -413,29 +513,77 @@ const StudentBooking = () => {
 
           <form className="booking-form" onSubmit={submitBooking}>
             <label className="admission-field">
-              <span>Shift</span>
-              <select autoComplete="off" value={booking.shiftId} onChange={updateBooking('shiftId')}>
-                <option value="">Select shift</option>
-                {shifts.map((shift) => (
-                  <option key={shift._id} value={shift._id}>
-                    {formatShiftLabel(shift)}
-                  </option>
-                ))}
+              <span>Booking Type</span>
+              <select
+                autoComplete="off"
+                value={booking.bookingType}
+                onChange={updateBooking('bookingType')}
+              >
+                <option value="single">1 Shift</option>
+                <option value="multi">2 Shifts</option>
+                <option value="full-day">Full Day</option>
               </select>
             </label>
+
+            {booking.bookingType === 'single' && (
+              <label className="admission-field">
+                <span>Shift</span>
+                <select autoComplete="off" value={booking.shiftId} onChange={updateBooking('shiftId')}>
+                  <option value="">Select shift</option>
+                  {shifts.map((shift) => (
+                    <option key={shift._id} value={shift._id}>
+                      {formatShiftLabel(shift)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+
+            {booking.bookingType === 'multi' && (
+              <div className="admission-field">
+                <span>Select 2 Shifts</span>
+                <div className="shift-choice-grid">
+                  {shifts.map((shift) => {
+                    const checked = booking.shiftIds.includes(shift._id);
+                    const maxSelected = booking.shiftIds.length >= 2;
+
+                    return (
+                      <label key={shift._id} className="shift-choice">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={!checked && maxSelected}
+                          onChange={toggleShift(shift._id)}
+                        />
+                        <span>{formatShiftLabel(shift)}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {booking.bookingType === 'full-day' && (
+              <label className="admission-field">
+                <span>Shifts</span>
+                <select autoComplete="off" value="all" disabled>
+                  <option value="all">All active shifts ({shifts.length})</option>
+                </select>
+              </label>
+            )}
 
             <div className="shift-summary">
               <div>
                 <strong>Total</strong>
-                <span>{booking.shiftId ? selectedShiftStats.total : 0}</span>
+                <span>{selectedShiftIds.length > 0 ? selectedShiftStats.total : 0}</span>
               </div>
               <div>
                 <strong>Booked</strong>
-                <span>{booking.shiftId ? selectedShiftStats.booked : 0}</span>
+                <span>{selectedShiftIds.length > 0 ? selectedShiftStats.booked : 0}</span>
               </div>
               <div>
                 <strong>Free</strong>
-                <span>{booking.shiftId ? selectedShiftStats.free : 0}</span>
+                <span>{selectedShiftIds.length > 0 ? selectedShiftStats.free : 0}</span>
               </div>
             </div>
 
@@ -445,7 +593,7 @@ const StudentBooking = () => {
                 autoComplete="off"
                 value={booking.seatId}
                 onChange={updateBooking('seatId')}
-                disabled={!booking.shiftId || loadingSeats}
+                disabled={selectedShiftIds.length === 0 || loadingSeats}
               >
                 <option value="">
                   {loadingSeats
@@ -479,7 +627,13 @@ const StudentBooking = () => {
               </div>
               <div>
                 <strong>Shift</strong>
-                <span>{selectedShift?.shiftName || 'Not selected'}</span>
+                <span>
+                  {booking.bookingType === 'full-day'
+                    ? `Full Day (${selectedShifts.length} shifts)`
+                    : selectedShifts.map((shift) => shift.shiftName).join(', ') ||
+                      selectedShift?.shiftName ||
+                      'Not selected'}
+                </span>
               </div>
               <div>
                 <strong>Seat</strong>

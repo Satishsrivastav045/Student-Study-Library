@@ -8,6 +8,12 @@ const bookingSchema = new mongoose.Schema(
       unique: true
     },
 
+    groupId: {
+      type: String,
+      default: () => `BG-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      index: true
+    },
+
     studentId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Student',
@@ -37,7 +43,11 @@ const bookingSchema = new mongoose.Schema(
       required: true
     },
 
-    
+    paymentAmount: {
+      type: Number,
+      required: true,
+      default: 0
+    },
 
     status: {
       type: String,
@@ -54,5 +64,12 @@ const bookingSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-module.exports = mongoose.model('Booking', bookingSchema);
+bookingSchema.index(
+  { seatId: 1, shiftId: 1, bookingDate: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { status: 'booked' }
+  }
+);
 
+module.exports = mongoose.model('Booking', bookingSchema);

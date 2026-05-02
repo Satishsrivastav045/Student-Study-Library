@@ -28,6 +28,45 @@ const validateSeatAndStudent = async (studentId, seatId) => {
   return seat;
 };
 
+const findBookedShiftNames = async (seatId, shiftIds, bookingDate) => {
+  const existing = await Booking.find({
+    seatId,
+    shiftId: { $in: shiftIds },
+    bookingDate,
+    status: 'booked'
+  }).populate('shiftId', 'shiftName');
+
+  return existing.map((booking) => booking.shiftId?.shiftName || 'selected shift');
+};
+
+const createShiftBookings = async ({
+  studentId,
+  seatId,
+  shifts,
+  bookingDate,
+  bookingType = 'SEAT',
+  groupId = `BG-${Date.now()}`
+}) => {
+  const timestamp = Date.now();
+
+  return Promise.all(
+    shifts.map((shift, index) =>
+      Booking.create({
+        bookingId: `BK-${timestamp}-${index}-${shift._id}`,
+        groupId,
+        studentId,
+        seatId,
+        shiftId: shift._id,
+        bookingDate,
+        bookingType,
+        status: 'booked',
+        paymentAmount: shift.price,
+        paymentId: null
+      })
+    )
+  );
+};
+
 /* =====================================================
    1️⃣ SINGLE SHIFT BOOKING
 ===================================================== */
@@ -41,7 +80,7 @@ exports.createBooking = async (req, res) => {
       });
     }
 
-    const seat = await validateSeatAndStudent(studentId, seatId);
+    await validateSeatAndStudent(studentId, seatId);
 
     const shift = await Shift.findById(shiftId);
     if (!shift) {
@@ -61,16 +100,12 @@ exports.createBooking = async (req, res) => {
       });
     }
 
-    const booking = await Booking.create({
-      bookingId: `BK-${Date.now()}`,
+    const [booking] = await createShiftBookings({
       studentId,
       seatId,
-      shiftId,
+      shifts: [shift],
       bookingDate,
-      bookingType: 'SEAT',
-      status: 'booked',
-      paymentAmount: shift.price,
-      paymentId: null
+      groupId: `BG-${Date.now()}`
     });
 
     res.status(201).json({
@@ -97,37 +132,32 @@ exports.createMultiShiftBooking = async (req, res) => {
       });
     }
 
-    const seat = await validateSeatAndStudent(studentId, seatId);
-    const created = [];
-
-    for (const shiftId of shiftIds) {
-      const shift = await Shift.findById(shiftId);
-      if (!shift) continue;
-
-      const exists = await Booking.findOne({
-        seatId,
-        shiftId,
-        bookingDate,
-        status: 'booked'
-      });
-      if (exists) continue;
-
-      const booking = await Booking.create({
-        bookingId: `BK-${Date.now()}-${shiftId}`,
-        studentId,
-        seatId,
-        shiftId,
-        bookingDate,
-        bookingType: 'SEAT',
-        status: 'booked',
-        paymentAmount: shift.price,
-        paymentId: null
-      });
-
-      created.push(booking);
+    if (shiftIds.length === 0) {
+      return res.status(400).json({ message: 'Select at least one shift' });
     }
 
-    // ✅ Availability is checked dynamically from Booking collection, no need to update seat status
+    const uniqueShiftIds = [...new Set(shiftIds)];
+    await validateSeatAndStudent(studentId, seatId);
+
+    const shifts = await Shift.find({ _id: { $in: uniqueShiftIds }, isActive: true });
+    if (shifts.length !== uniqueShiftIds.length) {
+      return res.status(404).json({ message: 'One or more shifts not found' });
+    }
+
+    const bookedShiftNames = await findBookedShiftNames(seatId, uniqueShiftIds, bookingDate);
+    if (bookedShiftNames.length > 0) {
+      return res.status(400).json({
+        message: `Seat already booked for: ${bookedShiftNames.join(', ')}`
+      });
+    }
+
+    const created = await createShiftBookings({
+      studentId,
+      seatId,
+      shifts,
+      bookingDate,
+      groupId: `BG-${Date.now()}`
+    });
 
     res.json({
       success: true,
@@ -153,38 +183,29 @@ exports.createFullDayBooking = async (req, res) => {
       });
     }
 
-    const seat = await validateSeatAndStudent(studentId, seatId);
+    await validateSeatAndStudent(studentId, seatId);
     const shifts = await Shift.find({ isActive: true });
 
-    const created = [];
-
-    for (const shift of shifts) {
-      const exists = await Booking.findOne({
-        seatId,
-        shiftId: shift._id,
-        bookingDate,
-        status: 'booked'
-      });
-      if (exists) continue;
-
-      const booking = await Booking.create({
-        bookingId: `BK-${Date.now()}-${shift._id}`,
-        studentId,
-        seatId,
-        shiftId: shift._id,
-        bookingDate,
-        bookingType: 'FULL_DAY',
-        status: 'booked',
-        paymentAmount: shift.price,
-        paymentId: null
-      });
-
-      created.push(booking);
+    if (shifts.length === 0) {
+      return res.status(400).json({ message: 'No active shifts found' });
     }
 
-    if (created.length > 0) {
-      // ✅ Availability is checked dynamically from Booking collection, no need to update seat status
+    const shiftIds = shifts.map((shift) => shift._id);
+    const bookedShiftNames = await findBookedShiftNames(seatId, shiftIds, bookingDate);
+    if (bookedShiftNames.length > 0) {
+      return res.status(400).json({
+        message: `Seat already booked for: ${bookedShiftNames.join(', ')}`
+      });
     }
+
+    const created = await createShiftBookings({
+      studentId,
+      seatId,
+      shifts,
+      bookingDate,
+      bookingType: 'FULL_DAY',
+      groupId: `BG-${Date.now()}`
+    });
 
     res.json({
       success: true,

@@ -1,8 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import API from '../services/api';
+
+const today = () => new Date().toISOString().slice(0, 10);
 
 const Seats = () => {
   const [seats, setSeats] = useState([]);
+  const [bookings, setBookings] = useState([]);
+  const [shifts, setShifts] = useState([]);
+  const [bookingDate, setBookingDate] = useState(today());
   const [loading, setLoading] = useState(false);
 
   const [form, setForm] = useState({
@@ -13,10 +18,20 @@ const Seats = () => {
   });
 
   const loadSeats = async () => {
-    setLoading(true);
-    const res = await API.get('/seats');
-    setSeats(res.data.data || []);
-    setLoading(false);
+    try {
+      setLoading(true);
+      const [seatsRes, bookingsRes, shiftsRes] = await Promise.all([
+        API.get('/seats'),
+        API.get('/bookings'),
+        API.get('/shifts')
+      ]);
+
+      setSeats(seatsRes.data.data || []);
+      setBookings(bookingsRes.data.data || []);
+      setShifts(shiftsRes.data.data || []);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -51,6 +66,42 @@ const Seats = () => {
       alert(err.response?.data?.message);
     }
   };
+
+  const bookingsBySeat = useMemo(() => {
+    const grouped = {};
+
+    bookings.forEach((booking) => {
+      if (booking.status !== 'booked' || !booking.seatId) return;
+      if (bookingDate && booking.bookingDate !== bookingDate) return;
+
+      const seatId = booking.seatId?._id || booking.seatId;
+      if (!grouped[seatId]) grouped[seatId] = [];
+      grouped[seatId].push(booking);
+    });
+
+    return grouped;
+  }, [bookings, bookingDate]);
+
+  const getSeatBookings = (seatId) => bookingsBySeat[seatId] || [];
+
+  const getSeatBookingStatus = (seat) => {
+    const seatBookings = getSeatBookings(seat._id);
+
+    if (seat.status === 'maintenance') return 'maintenance';
+    if (seat.status === 'blocked') return 'blocked';
+    if (seatBookings.length === 0) return seat.status;
+    if (shifts.length > 0 && seatBookings.length >= shifts.length) return 'full_day_booked';
+    return 'partially_booked';
+  };
+
+  const formatStatus = (status) => ({
+    available: 'available',
+    girls_only: 'girls_only',
+    maintenance: 'maintenance',
+    blocked: 'blocked',
+    partially_booked: 'part booked',
+    full_day_booked: 'full day'
+  }[status] || status);
 
   return (
     <div style={{ padding: 20 }}>
@@ -94,6 +145,23 @@ const Seats = () => {
         <button onClick={bulkCreate}>Create Seats</button>
       </div>
 
+      <div style={filterBox}>
+        <label style={filterLabel}>
+          Booking Date
+          <input
+            type="date"
+            value={bookingDate}
+            onChange={e => setBookingDate(e.target.value)}
+          />
+        </label>
+        <button type="button" onClick={() => setBookingDate('')}>
+          Show All Dates
+        </button>
+        <button type="button" onClick={() => setBookingDate(today())}>
+          Today
+        </button>
+      </div>
+
       {/* TABLE */}
       {loading ? <p>Loading...</p> : (
         <table style={table}>
@@ -103,41 +171,64 @@ const Seats = () => {
               <th>Row</th>
               <th>Column</th>
               <th>Status</th>
+              <th>Booked Shifts</th>
               <th>Action</th>
             </tr>
           </thead>
 
           <tbody>
-            {seats.map(seat => (
-              <tr key={seat._id} style={rowStyle}>
-                <td>{seat.seatNo}</td>
-                <td>{seat.row}</td>
-                <td>{seat.column}</td>
-                <td>
-                  <span style={badge(seat.status)}>
-                    {seat.status}
-                  </span>
-                </td>
-                <td style={{ display: 'flex', gap: 8 }}>
-                  <select
-                    value={seat.status}
-                    onChange={e => updateStatus(seat._id, e.target.value)}
-                  >
-                    <option value="available">Available</option>
-                    <option value="girls_only">Girls Only</option>
-                    <option value="maintenance">Maintenance</option>
-                    <option value="blocked">Blocked</option>
-                  </select>
+            {seats.map(seat => {
+              const seatBookings = getSeatBookings(seat._id);
+              const bookingStatus = getSeatBookingStatus(seat);
 
-                  <button
-                    style={deleteBtn}
-                    onClick={() => deleteSeat(seat._id)}
-                  >
-                    Delete
-                  </button>
-                </td>
-              </tr>
-            ))}
+              return (
+                <tr key={seat._id} style={rowStyle}>
+                  <td>{seat.seatNo}</td>
+                  <td>{seat.row}</td>
+                  <td>{seat.column}</td>
+                  <td>
+                    <span style={badge(bookingStatus)}>
+                      {formatStatus(bookingStatus)}
+                    </span>
+                    {seat.status !== 'available' && (
+                      <span style={baseStatus}>Base: {seat.status}</span>
+                    )}
+                  </td>
+                  <td>
+                    {seatBookings.length > 0 ? (
+                      <div style={shiftList}>
+                        {seatBookings.map((booking) => (
+                          <span key={booking._id} style={shiftChip}>
+                            {booking.shiftId?.shiftName || 'Shift'}
+                            {booking.studentId?.name ? ` - ${booking.studentId.name}` : ''}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <span style={emptyText}>No booking</span>
+                    )}
+                  </td>
+                  <td style={{ display: 'flex', gap: 8 }}>
+                    <select
+                      value={seat.status}
+                      onChange={e => updateStatus(seat._id, e.target.value)}
+                    >
+                      <option value="available">Available</option>
+                      <option value="girls_only">Girls Only</option>
+                      <option value="maintenance">Maintenance</option>
+                      <option value="blocked">Blocked</option>
+                    </select>
+
+                    <button
+                      style={deleteBtn}
+                      onClick={() => deleteSeat(seat._id)}
+                    >
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}
@@ -153,6 +244,21 @@ const box = {
   border: '1px solid #ddd',
   borderRadius: 10,
   marginBottom: 20
+};
+
+const filterBox = {
+  display: 'flex',
+  alignItems: 'end',
+  gap: 10,
+  marginBottom: 16,
+  flexWrap: 'wrap'
+};
+
+const filterLabel = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 6,
+  fontWeight: 600
 };
 
 const table = {
@@ -177,8 +283,40 @@ const badge = (status) => ({
     status === 'girls_only' ? '#ec4899' :
     status === 'maintenance' ? '#f59e0b' :
     status === 'blocked' ? '#6b7280' :
+    status === 'partially_booked' ? '#2563eb' :
+    status === 'full_day_booked' ? '#7c3aed' :
     '#2563eb' // booked
 });
+
+const baseStatus = {
+  display: 'block',
+  marginTop: 6,
+  color: '#6b7280',
+  fontSize: 12
+};
+
+const shiftList = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 6
+};
+
+const shiftChip = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  borderRadius: 999,
+  padding: '5px 9px',
+  color: '#1f2937',
+  background: '#dbeafe',
+  border: '1px solid #bfdbfe',
+  fontSize: 12,
+  fontWeight: 600
+};
+
+const emptyText = {
+  color: '#9ca3af',
+  fontSize: 13
+};
 
 const deleteBtn = {
   background: '#ef4444',

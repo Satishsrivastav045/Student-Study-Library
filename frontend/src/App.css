@@ -922,6 +922,44 @@ select {
   background: #fff;
 }
 
+.admission-field select:disabled {
+  color: #5d6370;
+  cursor: not-allowed;
+  opacity: 1;
+}
+
+.shift-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.shift-choice {
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid rgba(141, 149, 169, 0.18);
+  border-radius: 12px;
+  background: rgba(247, 248, 251, 0.96);
+  padding: 10px 12px;
+}
+
+.shift-choice input {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  accent-color: #4d5d84;
+}
+
+.shift-choice span {
+  min-width: 0;
+  color: #2d313b;
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
 .admission-field--wide {
   grid-column: 1 / -1;
 }
@@ -1144,7 +1182,8 @@ select {
 
   .admission-grid,
   .booking-summary,
-  .shift-summary {
+  .shift-summary,
+  .shift-choice-grid {
     grid-template-columns: 1fr;
   }
 

@@ -1,6 +1,42 @@
 import { useEffect, useState } from 'react';
 import API from '../services/api';
 
+const groupBookings = (bookings = []) => {
+  const groups = new Map();
+
+  bookings.forEach((booking) => {
+    const key =
+      booking.groupId ||
+      [
+        booking.studentId?._id || booking.studentId || 'student',
+        booking.seatId?._id || booking.seatId || 'seat',
+        booking.bookingDate || 'date',
+        booking.createdAt || booking._id
+      ].join('-');
+
+    if (!groups.has(key)) {
+      groups.set(key, {
+        ...booking,
+        groupKey: key,
+        bookings: [],
+        shifts: [],
+        totalAmount: 0
+      });
+    }
+
+    const group = groups.get(key);
+    group.bookings.push(booking);
+    group.shifts.push(booking.shiftId?.shiftName || 'Shift');
+    group.totalAmount += Number(booking.paymentAmount) || Number(booking.shiftId?.price) || 0;
+
+    if (booking.paymentId?.status === 'paid') {
+      group.paymentId = booking.paymentId;
+    }
+  });
+
+  return [...groups.values()];
+};
+
 const Bookings = () => {
   const [bookings, setBookings] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -21,7 +57,7 @@ const Bookings = () => {
     fetchBookings();
   }, []);
 
-  const activeBookings = bookings.filter(b => b.status === 'booked');
+  const activeBookings = groupBookings(bookings.filter(b => b.status === 'booked'));
 
   return (
     <div style={{ padding: 20 }}>
@@ -36,13 +72,15 @@ const Bookings = () => {
               <th>Student</th>
               <th>Seat</th>
               <th>Shift</th>
+              <th>Date</th>
+              <th>Amount</th>
               <th>Status</th>
               <th>Payment</th>
             </tr>
           </thead>
           <tbody>
             {activeBookings.map(b => (
-              <tr key={b._id}>
+              <tr key={b.groupKey}>
                 <td>
                   {b.studentId?.name || '-'}
                   {b.status === 'cancelled' && (
@@ -52,7 +90,9 @@ const Bookings = () => {
                   )}
                 </td>
                 <td>{b.seatId?.seatNo}</td>
-                <td>{b.shiftId?.shiftName}</td>
+                <td>{b.shifts.join(', ')}</td>
+                <td>{b.bookingDate || '-'}</td>
+                <td>₹{b.totalAmount}</td>
                 <td>{b.status}</td>
                 <td>
                   {b.paymentId?.status === 'paid'

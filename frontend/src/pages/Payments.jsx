@@ -8,6 +8,70 @@ const formatCurrency = (value = 0) =>
     maximumFractionDigits: 0
   }).format(Number(value) || 0);
 
+const getWhatsappPhone = (phone = '') => {
+  const digits = String(phone).replace(/\D/g, '');
+  if (digits.length === 10) return `91${digits}`;
+  if (digits.length === 12 && digits.startsWith('91')) return digits;
+  return digits;
+};
+
+const openWhatsappReminder = (bookingGroup, bill) => {
+  const phone = getWhatsappPhone(bookingGroup.studentId?.phoneNumber);
+
+  if (!phone) {
+    alert('Student mobile number not found');
+    return;
+  }
+
+  const studentName = bookingGroup.studentId?.name || 'Student';
+  const message = [
+    `Namaste ${studentName},`,
+    `Aapki library fee due hai: ${formatCurrency(bill?.totalPayable)}.`,
+    `Seat: ${bookingGroup.seatId?.seatNo || '-'}`,
+    `Shift: ${bookingGroup.shifts.join(', ')}`,
+    `Date: ${bookingGroup.bookingDate || '-'}`,
+    'Kripya payment complete kar dein. Dhanyavaad.'
+  ].join('\n');
+
+  window.open(`https://wa.me/${phone}?text=${encodeURIComponent(message)}`, '_blank');
+};
+
+const groupBookings = (bookings = []) => {
+  const groups = new Map();
+
+  bookings.forEach((booking) => {
+    const key =
+      booking.groupId ||
+      [
+        booking.studentId?._id || booking.studentId || 'student',
+        booking.seatId?._id || booking.seatId || 'seat',
+        booking.bookingDate || 'date',
+        booking.createdAt || booking._id
+      ].join('-');
+
+    if (!groups.has(key)) {
+      groups.set(key, {
+        ...booking,
+        groupKey: key,
+        bookings: [],
+        shifts: [],
+        currentAmount: 0
+      });
+    }
+
+    const group = groups.get(key);
+    group.bookings.push(booking);
+    group.shifts.push(booking.shiftId?.shiftName || 'Shift');
+    group.currentAmount += Number(booking.paymentAmount) || Number(booking.shiftId?.price) || 0;
+
+    if (booking.paymentId?.status === 'paid') {
+      group.paymentId = booking.paymentId;
+    }
+  });
+
+  return [...groups.values()];
+};
+
 const Payments = () => {
   const [bookings, setBookings] = useState([]);
   const [selectedBooking, setSelectedBooking] = useState(null);
@@ -28,8 +92,10 @@ const Payments = () => {
     fetchBookings();
   }, []);
 
+  const bookingGroups = useMemo(() => groupBookings(bookings), [bookings]);
+
   const bookingBills = useMemo(() => {
-    const sorted = [...bookings].sort((left, right) => {
+    const sorted = [...bookingGroups].sort((left, right) => {
       const leftTime = new Date(left.bookingDate || left.createdAt || 0).getTime();
       const rightTime = new Date(right.bookingDate || right.createdAt || 0).getTime();
       if (leftTime !== rightTime) return leftTime - rightTime;
@@ -39,20 +105,20 @@ const Payments = () => {
     const outstandingByStudent = new Map();
     const bills = {};
 
-    sorted.forEach((booking) => {
-      const studentId = booking.studentId?._id || booking.studentId;
-      const paid = booking.paymentId?.status === 'paid';
-      const currentAmount = Number(booking.paymentAmount) || Number(booking.shiftId?.price) || 0;
+    sorted.forEach((bookingGroup) => {
+      const studentId = bookingGroup.studentId?._id || bookingGroup.studentId;
+      const paid = bookingGroup.paymentId?.status === 'paid';
+      const currentAmount = bookingGroup.currentAmount;
       const previousDue = outstandingByStudent.get(studentId) || 0;
       const totalPayable = previousDue + currentAmount;
 
-      bills[booking._id] = {
+      bills[bookingGroup.groupKey] = {
         currentAmount,
         previousDue,
         totalPayable
       };
 
-      if (booking.status === 'cancelled' || paid) {
+      if (bookingGroup.status === 'cancelled' || paid) {
         outstandingByStudent.set(studentId, 0);
       } else {
         outstandingByStudent.set(studentId, totalPayable);
@@ -60,9 +126,9 @@ const Payments = () => {
     });
 
     return bills;
-  }, [bookings]);
+  }, [bookingGroups]);
 
-  const selectedBill = selectedBooking ? bookingBills[selectedBooking._id] : null;
+  const selectedBill = selectedBooking ? bookingBills[selectedBooking.groupKey] : null;
 
   // 🔹 Create payment
   const submitPayment = async () => {
@@ -70,7 +136,7 @@ const Payments = () => {
     setLoading(true);
 
     await API.post('/payments', {
-      bookingId: selectedBooking._id,
+      bookingId: selectedBooking.bookings[0]._id,
       method
     });
 
@@ -96,34 +162,49 @@ const Payments = () => {
           <tr>
             <th>Student</th>
             <th>Seat</th>
-            <th>Shift</th>
-            <th>Status</th>
-            <th>Payment</th>
-          </tr>
-        </thead>
+              <th>Shift</th>
+              <th>Status</th>
+              <th>Payment</th>
+              <th>Reminder</th>
+            </tr>
+          </thead>
 
         <tbody>
-          {bookings.map(b => (
-            <tr key={b._id}>
+          {bookingGroups.map(b => (
+            <tr key={b.groupKey}>
               <td>{b.studentId?.name}</td>
               <td>{b.seatId?.seatNo}</td>
-              <td>{b.shiftId?.shiftName}</td>
+              <td>{b.shifts.join(', ')}</td>
               <td>
                 {b.paymentId?.status === 'paid'
                   ? 'Paid'
                   : b.paymentId?.status === 'cancelled'
                   ? 'Cancelled'
-                  : `Due (${formatCurrency(bookingBills[b._id]?.totalPayable)})`}
+                  : `Due (${formatCurrency(bookingBills[b.groupKey]?.totalPayable)})`}
               </td>
               <td>
                 {b.paymentId?.status === 'paid' ? (
-                  <span style={{ color: 'green' }}>✅ Paid</span>
+                  <span style={{ color: 'green' }}>
+                    Paid {formatCurrency(b.paymentId?.amount)}
+                  </span>
                 ) : b.paymentId?.status === 'cancelled' ? (
                   <span style={{ color: 'gray' }}>Cancelled</span>
                 ) : (
                   <button onClick={() => setSelectedBooking(b)}>
-                    Pay {formatCurrency(bookingBills[b._id]?.totalPayable)}
+                    Pay {formatCurrency(bookingBills[b.groupKey]?.totalPayable)}
                   </button>
+                )}
+              </td>
+              <td>
+                {!b.paymentId && b.status !== 'cancelled' ? (
+                  <button
+                    type="button"
+                    onClick={() => openWhatsappReminder(b, bookingBills[b.groupKey])}
+                  >
+                    WhatsApp
+                  </button>
+                ) : (
+                  '-'
                 )}
               </td>
             </tr>
@@ -139,7 +220,7 @@ const Payments = () => {
 
             <p><b>Student:</b> {selectedBooking.studentId.name}</p>
             <p><b>Seat:</b> {selectedBooking.seatId.seatNo}</p>
-            <p><b>Shift:</b> {selectedBooking.shiftId.shiftName}</p>
+            <p><b>Shift:</b> {selectedBooking.shifts.join(', ')}</p>
             <p><b>Current Fee:</b> {formatCurrency(selectedBill?.currentAmount)}</p>
             <p><b>Previous Due:</b> {formatCurrency(selectedBill?.previousDue)}</p>
             <p><b>Total Payable:</b> {formatCurrency(selectedBill?.totalPayable)}</p>
